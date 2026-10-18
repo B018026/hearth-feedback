@@ -1,0 +1,88 @@
+# hsreview — ハースストーン対戦の振り返りツール
+
+ハースストーンの対戦後に、自分のプレイを振り返って「ここをこうすればよかった」を洗い出すためのツールです。
+リアルタイムで助言するのではなく、**終わった試合を後からゆっくり見直す**ことを目的にしています。
+
+ゲームが出力するログ(`Power.log`)を読んで、1試合ごとの「棋譜」(Markdown)と統計を作ります。
+その棋譜を Claude などのAIに読ませて、改善点を洗い出してもらう使い方を想定しています。
+**ログを読むだけで、ゲーム本体には触れません。** (Hearthstone Deck Tracker や Firestone と同じ方式です)
+
+> 非公式のファンツールです。Blizzard Entertainment とは無関係で、承認も受けていません。
+> Hearthstone は Blizzard Entertainment の商標です。
+
+## できること
+
+- ランク戦(スタンダード)の試合を、ログから自動で取り込む
+- ターンごとの手札・盤面・HP・マナ、使ったカード、攻撃、死亡、発見の選択肢を時系列にまとめる
+- 統計: ターンごとの余りマナ、ヒーローパワーの使用、コインを使ったターン、HP推移
+- 登場したカードの効果テキスト(日本語)を棋譜に付ける。常にその試合のビルドのカードデータを使う
+- 新しいキーワード(伝令・仕込み・合成など)を `knowledge/` に蓄積して、棋譜に注釈する
+
+出力の例は [examples/sample_game.md](examples/sample_game.md) を見てください。
+
+## 必要なもの
+
+- Windows + Python 3.10 以上
+- ハースストーン本体(ログ出力が有効であること)。Hearthstone Deck Tracker や Firestone を使っていれば、たいてい設定済みです。
+
+## 使い方
+
+```
+python -m pip install -r requirements.txt
+
+python hsreview.py sync          # 新しい試合を games/ に取り込む(ランク戦・スタンダードのみ)
+python hsreview.py list          # 一覧
+python hsreview.py show latest   # 最新の棋譜を表示 (ID / latest / 一覧の番号)
+python hsreview.py stats         # 全試合の統計
+python hsreview.py rebuild       # 保存済みの生ログから棋譜を作り直す
+```
+
+遊んだら `sync` で取り込んでください。ハースストーンは古いログを消すため、早めの取り込みをおすすめします。
+取り込んだ試合は `games/` に保存されます(このフォルダは Git には含まれません)。
+
+ログの場所が標準と違う場合は、`--logs` か環境変数 `HS_LOGS` で指定します。
+
+```
+python hsreview.py sync --logs "D:\Hearthstone\Logs"
+```
+
+### ログ出力の設定(初回のみ)
+
+`%LOCALAPPDATA%\Blizzard\Hearthstone\log.config` に、次の内容が必要です。
+
+```
+[Power]
+LogLevel=1
+FilePrinting=true
+ConsolePrinting=false
+ScreenPrinting=false
+Verbose=true
+```
+
+### AIに振り返ってもらう
+
+[Claude Code](https://claude.com/claude-code) でこのフォルダを開いて、「直近の負けを振り返って」と頼むのが簡単です。
+`CLAUDE.md` に手順と注意事項を書いてあるので、新しいセッションでもそのまま使えます。
+`games/<ID>.md` を他のAIに貼り付けて頼むこともできます。
+
+## 注意と限界
+
+- ログに残るのは**自分に見えていた情報だけ**です。相手の手札やデッキは、使われたカードしか分かりません。
+- ダメージ量などの細かい処理はログに書かれないため、ターン終了時の盤面とHPから読み取ります。
+- 「出せたのに残したカード」などの統計は目安です。温存が正しい場面もあります。
+- AIの指摘は参考です。最新セットの効果は、棋譜に付くカードテキストを根拠にします。
+- 新しい用語の説明は `knowledge/keywords.json` にあります。確度(公式で確認 / ログから推定 / 未確認)を明記しているので、未確認のものは鵜呑みにしないでください。
+
+## プライバシー
+
+- 生ログにはあなたのバトルタグが含まれます。`games/` は `.gitignore` で除外しています。**ログや `games/` を公開しないでください。**
+- 棋譜(`.md`)には、バトルタグは出力されません。AIに渡す前に、念のため内容を確認してください。
+
+## 使っているもの
+
+- [python-hearthstone / hslog](https://github.com/HearthSim/python-hearthstone) (HearthSim) — ログの解析
+- [HearthstoneJSON](https://hearthstonejson.com/) — カードデータ(起動時に自動取得。このリポジトリには含みません)
+
+## ライセンス
+
+MIT License(コードのみ)。カードの名前・効果テキスト・画像などの著作権は Blizzard Entertainment にあります。

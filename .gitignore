@@ -1,0 +1,18 @@
+# 個人のデータ(バトルタグを含む生ログ、自分の棋譜)は公開しない
+games/
+
+# 起動時にHearthstoneJSONから自動取得するカードデータ(Blizzardの著作物なので同梱しない)
+cards/
+
+# 自分専用のメモ(デッキの狙いなど)
+CLAUDE.local.md
+
+# Python
+__pycache__/
+*.pyc
+*.bak
+.venv/
+venv/
+
+# 作業用
+*.tmp
