@@ -1,3 +1,4 @@
 hslog
 hearthstone
 anthropic
+keyring

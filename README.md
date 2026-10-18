@@ -41,7 +41,17 @@
 - Windows + Python 3.10 以上
 - ハースストーン本体(ログ出力が有効であること)。Hearthstone Deck Tracker や Firestone を使っていれば、たいてい設定済みです。
 
-## アプリ(試作版): ブラウザで見る
+## Windows版(インストーラー)
+
+Pythonが入っていないPCでも使えます。インストーラー(`HSReview-Setup-x.y.z.exe`)を実行すると、スタートメニューに「HS振り返り」ができます。起動すると小さなウィンドウが出て、ブラウザで画面が開きます(ウィンドウを閉じると終了します)。
+
+- 初回は、[注意事項・免責](docs/DISCLAIMER.md)への同意が必要です。
+- APIキーは、Windowsの資格情報マネージャーに保存されます。
+- 署名のないアプリのため、初回の実行時にWindowsが警告を出します。「詳細情報」→「実行」で起動できます。
+
+自分でビルドする場合は、[ビルド手順](docs/BUILD.md)を見てください。
+
+## アプリ(開発版): Pythonで動かす
 
 ```
 python -m pip install -r requirements.txt

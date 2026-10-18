@@ -10,7 +10,7 @@ if not defined PY (
   pause
   exit /b 1
 )
-%PY% -c "import hslog, hearthstone, anthropic" >nul 2>nul
+%PY% -c "import hslog, hearthstone, anthropic, keyring" >nul 2>nul
 if errorlevel 1 (
   echo Installing required packages. This takes a minute the first time...
   %PY% -m pip install -r requirements.txt

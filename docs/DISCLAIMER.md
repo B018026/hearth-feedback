@@ -6,7 +6,7 @@
 ## 1. 非公式のツールです
 
 - このツールは、個人が作った**非公式のファンツール**です。Blizzard Entertainment, Inc. とは無関係で、承認・提携・後援を受けていません。
-- Hearthstone は Blizzard Entertainment, Inc. の商標または登録商標です。カードの名称・効果テキスト・画像などの著作権は、Blizzard Entertainment, Inc. にあります。このリポジトリには、カードの画像やデータは含まれていません(使うときに、HearthstoneJSON から取得・表示します)。
+- Hearthstone は Blizzard Entertainment, Inc. の商標または登録商標です。カードの名称・効果テキスト・画像などの著作権は、Blizzard Entertainment, Inc. にあります。このツールには、カードの画像やデータは同梱されていません(使うときに、HearthstoneJSON から取得・表示します)。
 - 公式の表記が必要な場合は、[Blizzardの法的情報のページ](https://www.blizzard.com/en-us/legal/)に従ってください。
 
 ## 2. ゲームのルールとの関係(ご自身の判断でお使いください)

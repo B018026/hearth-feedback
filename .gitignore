@@ -20,3 +20,12 @@ venv/
 
 # 作業用
 *.tmp
+
+# exe化の出力(別の場所に出力するが、念のため)
+build/
+dist/
+*.spec
+
+# 配布用のインストーラー(GitHubのReleasesで配る。リポジトリには入れない)
+release/
+*.exe

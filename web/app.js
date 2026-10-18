@@ -58,7 +58,8 @@ async function loadState() {
   const st = await api("/api/state");
   S.games = st.games; S.settings = st.settings; S.models = st.models; S.env = st.env;
   S.systemPrompt = st.system_prompt || "";
-  $("#ver").textContent = "試作版 " + st.version;
+  S.consent = st.consent || { ok: true, version: "" };
+  $("#ver").textContent = "v" + st.version;
 }
 
 function renderList() {
@@ -405,7 +406,8 @@ async function pollAI(id, out) {
 /* 小さなMarkdown表示 */
 function md(src) {
   const lines = String(src).replace(/\r/g, "").split("\n"); let out = "", list = null, para = [];
-  const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   const flushP = () => { if (para.length) { out += "<p>" + inline(para.join(" ")) + "</p>"; para = []; } };
   const closeL = () => { if (list) { out += `</${list}>`; list = null; } };
   for (let i = 0; i < lines.length; i++) {
@@ -445,7 +447,9 @@ function openSettings() {
   m.replaceChildren(h("div", { class: "dialog", role: "dialog", "aria-label": "設定" },
     h("h3", {}, "設定"),
     h("div", { class: "field" }, h("label", {}, "AIのAPIキー（Anthropic）"), key,
-      h("div", { class: "help" }, "AIの料金は、このキーのアカウントに請求されます。キーはこのPCの中にだけ保存され、AI（Anthropic）への通信以外には使いません。試作版では設定ファイルに平文で保存されます。"),
+      h("div", { class: "help" }, "AIの料金は、このキーのアカウントに請求されます。キーはAI（Anthropic）への通信以外には使いません。",
+        st.key_store === "keyring" ? "キーは、このPCのWindows資格情報マネージャーに保存されます。"
+          : "このPCでは安全な保管場所を使えないため、キーは設定ファイル（settings.json）に平文で保存されます。他人に渡さないでください。"),
       st.api_key_set ? h("button", { class: "ghost", style: "margin-top:6px", onclick: async () => { await post("/api/settings", { api_key: "__clear__" }); await refresh(); openSettings(); } }, "保存済みのキーを削除") : null),
     h("div", { class: "field" }, h("label", {}, "使うAIモデル"), model),
     h("div", { class: "field" }, h("label", {}, "デッキの狙いなどのメモ（AIに伝えます）"), memo,
@@ -455,7 +459,8 @@ function openSettings() {
     h("div", { class: "field" }, h("label", {}, "ログ出力の設定"),
       h("div", { class: "ai-row" }, h("span", {}, e.logconfig_ok ? "設定済み" : "未設定"), e.logconfig_ok ? null : h("button", { onclick: async () => { await fixLogConfig(); openSettings(); } }, "自動で設定する")),
       h("div", { class: "help" }, "設定を変えたあとは、ハースストーンを再起動してください。")),
-    h("div", { class: "btns" }, h("button", { onclick: () => (m.hidden = true) }, "閉じる"),
+    h("div", { class: "btns" }, h("button", { class: "ghost", style: "margin-right:auto", onclick: () => showConsent(true) }, "注意事項・免責を見る"),
+      h("button", { onclick: () => (m.hidden = true) }, "閉じる"),
       h("button", { class: "primary", onclick: async () => {
         try {
           await post("/api/settings", { api_key: key.value, model: model.value, memo: memo.value, logs_dir: logs.value });
@@ -464,6 +469,46 @@ function openSettings() {
       } }, "保存"))));
   m.hidden = false;
   m.onclick = (ev) => { if (ev.target === m) m.hidden = true; };
+}
+
+/* ---------------- ご利用にあたって(初回の同意) */
+const CONSENT_POINTS = [
+  "非公式のファンツールです。Blizzard Entertainment とは無関係で、承認も受けていません。",
+  "ハースストーンのログを読むだけで、ゲームには触れません。ただし、Blizzardの規約には、許可されていないソフトによるゲーム情報の読み取りを禁じる条項があります。ご利用は、ご自身の判断と責任でお願いします。",
+  "「AI振り返り」では、その試合の記録が Anthropic（Claude）に送信され、料金は、設定したあなたのAPIキーに請求されます。AIの指摘は、間違うことがあります。",
+  "生ログにはあなたのバトルタグが含まれます。取り込んだデータは、このPCの中にだけ保存されます。他人に渡さないでください。",
+];
+async function showConsent(viewOnly) {
+  let text = "";
+  try { text = await (await fetch("/api/disclaimer")).text(); } catch (_) { /* 取得できなくても、要点は表示する */ }
+  const m = $("#modal");
+  const box = h("div", { class: "md disc-scroll" });
+  box.innerHTML = md(text || "（全文を読み込めませんでした）");
+  const top = [h("h3", {}, viewOnly ? "注意事項・免責" : "ご利用にあたって"),
+    h("ul", { class: "points" }, CONSENT_POINTS.map((p) => h("li", {}, p))),
+    h("p", { class: "muted" }, "全文は次のとおりです（スクロールできます）。"), box];
+  return new Promise((resolve) => {
+    if (viewOnly) {
+      m.replaceChildren(h("div", { class: "dialog", role: "dialog" }, ...top,
+        h("div", { class: "btns" }, h("button", { class: "primary", onclick: () => { openSettings(); resolve(); } }, "戻る"))));
+      m.hidden = false;
+      return;
+    }
+    const agree = h("input", { type: "checkbox", id: "f-agree", style: "width:auto" });
+    const btn = h("button", { class: "primary", disabled: true }, "同意して始める");
+    agree.addEventListener("change", () => (btn.disabled = !agree.checked));
+    btn.addEventListener("click", async () => {
+      try {
+        await post("/api/consent", { version: S.consent.version });
+        S.consent.ok = true; m.hidden = true; m.onclick = null; resolve();
+      } catch (e) { toast("保存に失敗しました: " + e.message); }
+    });
+    m.replaceChildren(h("div", { class: "dialog", role: "dialog", "aria-label": "ご利用にあたって" }, ...top,
+      h("label", { class: "agree" }, agree, " 上の内容を読み、理解したうえで、自己責任で利用します"),
+      h("div", { class: "btns" }, btn)));
+    m.onclick = null;
+    m.hidden = false;
+  });
 }
 
 /* ---------------- 起動 */
@@ -481,6 +526,10 @@ async function applyHash() {
   renderGame();
 }
 (async function init() {
-  try { await loadState(); renderList(); renderHome(); await applyHash(); }
+  try {
+    await loadState();
+    if (!S.consent.ok) await showConsent(false);   // 初回(または免責の更新後)は、同意するまで先に進めない
+    renderList(); renderHome(); await applyHash();
+  }
   catch (e) { $("#main").replaceChildren(h("div", { class: "err" }, "アプリに接続できませんでした: " + e.message)); }
 })();

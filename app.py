@@ -11,10 +11,10 @@ import json
 import mimetypes
 import os
 import re
-import socket
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,10 +23,16 @@ from urllib.parse import unquote, urlparse
 
 import hsreview as hs
 
-APP_DIR = Path(__file__).resolve().parent
+FROZEN = hs.FROZEN
+APP_DIR = hs.HERE   # 同梱ファイル(web/ docs/ assets/)の場所。exe版では展開先
 WEB_DIR = APP_DIR / "web"
+DISCLAIMER_PATH = APP_DIR / "docs" / "DISCLAIMER.md"
 SETTINGS_PATH = hs.DATA_DIR / "settings.json"
-VERSION = "0.1-prototype"
+VERSION = "0.2.0"
+# 免責の文面を変えたら、この日付を更新する(利用者に、もう一度同意を求める)
+CONSENT_VERSION = "2026-10-18"
+KEYRING_SERVICE = os.environ.get("HSREVIEW_KEYRING_SERVICE", "HSReview")   # テストでは別名にして、本物のキーに触れない
+KEYRING_USER = "anthropic_api_key"
 
 # 料金はUSD/100万トークン(2026-10時点の公開価格。画面の概算表示にだけ使う)
 MODELS = [
@@ -36,7 +42,7 @@ MODELS = [
 ]
 # 考える深さ(effort)の初期値。Haikuは考える量が多くなりやすいので、1段階軽くする
 DEFAULT_EFFORT = {"claude-haiku-5-5": "medium"}
-DEFAULT_SETTINGS = {"api_key": "", "model": MODELS[0]["id"], "memo": "", "logs_dir": ""}
+DEFAULT_SETTINGS = {"api_key": "", "model": MODELS[0]["id"], "memo": "", "logs_dir": "", "consent": ""}
 
 SYSTEM_PROMPT = """あなたはハースストーンの上級者コーチです。プレイヤー本人が、終わった試合を後から振り返るための記録を読み、具体的な改善点を指摘します。
 
@@ -70,15 +76,88 @@ def save_settings(s):
     SETTINGS_PATH.write_text(json.dumps(s, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+def _keyring():
+    try:
+        import keyring
+        return keyring
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def key_store_kind():
+    """APIキーの保管場所: 'keyring'(Windowsの資格情報マネージャー) か 'file'(設定ファイルに平文)。"""
+    kr = _keyring()
+    if kr:
+        try:
+            kr.get_password(KEYRING_SERVICE, KEYRING_USER)
+            return "keyring"
+        except Exception:  # noqa: BLE001
+            pass
+    return "file"
+
+
+def stored_key():
+    kr = _keyring()
+    if kr:
+        try:
+            v = kr.get_password(KEYRING_SERVICE, KEYRING_USER)
+            if v:
+                return v
+        except Exception:  # noqa: BLE001
+            pass
+    return load_settings().get("api_key", "")
+
+
+def store_key(key):
+    kr = _keyring()
+    if kr:
+        try:
+            kr.set_password(KEYRING_SERVICE, KEYRING_USER, key)
+            if kr.get_password(KEYRING_SERVICE, KEYRING_USER) == key:  # 読み戻して確認できたときだけ、ファイルの控えを消す
+                s = load_settings()
+                s["api_key"] = ""
+                save_settings(s)
+                return "keyring"
+        except Exception:  # noqa: BLE001
+            pass
+    s = load_settings()
+    s["api_key"] = key
+    save_settings(s)
+    return "file"
+
+
+def clear_key():
+    kr = _keyring()
+    if kr:
+        try:
+            kr.delete_password(KEYRING_SERVICE, KEYRING_USER)
+        except Exception:  # noqa: BLE001
+            pass
+    s = load_settings()
+    s["api_key"] = ""
+    save_settings(s)
+
+
+def migrate_key():
+    """旧方式(設定ファイルに平文)で保存されたキーを、資格情報マネージャーへ移す。"""
+    s = load_settings()
+    if s.get("api_key"):
+        store_key(s["api_key"])
+
+
 def api_key():
-    return load_settings().get("api_key") or os.environ.get("ANTHROPIC_API_KEY") or ""
+    return stored_key() or os.environ.get("ANTHROPIC_API_KEY") or ""
+
+
+def consent_ok():
+    return load_settings().get("consent") == CONSENT_VERSION
 
 
 def public_settings():
     s = load_settings()
     key = api_key()
     return {"model": s["model"], "memo": s["memo"], "logs_dir": s["logs_dir"],
-            "api_key_set": bool(key), "api_key_tail": key[-4:] if key else ""}
+            "api_key_set": bool(key), "api_key_tail": key[-4:] if key else "", "key_store": key_store_kind()}
 
 
 # ------------------------------------------------------------ ログの場所と設定
@@ -313,6 +392,10 @@ class Handler(BaseHTTPRequestHandler):
         return m.group(1) if m else None
 
     def api_get(self, path):
+        if path == "/api/ping":
+            return self.send_json({"app": "hsreview", "version": VERSION})
+        if path == "/api/disclaimer":
+            return self.send_text(DISCLAIMER_PATH.read_text(encoding="utf-8") if DISCLAIMER_PATH.exists() else "")
         if path == "/api/state":
             idx = hs.load_index()
             games = []
@@ -325,7 +408,7 @@ class Handler(BaseHTTPRequestHandler):
             logs = find_logs_dir()
             return self.send_json({
                 "version": VERSION, "games": games, "settings": public_settings(), "models": MODELS,
-                "system_prompt": SYSTEM_PROMPT,
+                "system_prompt": SYSTEM_PROMPT, "consent": {"ok": consent_ok(), "version": CONSENT_VERSION},
                 "env": {"logs_dir": logs, "logs_exist": Path(logs).exists(),
                         "logconfig_ok": logconfig_ok(), "fake_ai": bool(os.environ.get("HSREVIEW_FAKE_AI"))},
             })
@@ -348,17 +431,27 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"error": "not found"}, 404)
 
     def api_post(self, path, body):
+        if path == "/api/consent":
+            if body.get("version") != CONSENT_VERSION:
+                return self.send_json({"error": "文面が更新されています。画面を再読み込みしてください。"}, 400)
+            s = load_settings()
+            s["consent"] = CONSENT_VERSION
+            save_settings(s)
+            return self.send_json({"ok": True})
+        if path in ("/api/sync", "/api/logconfig/fix") or self.game_id(path, "/analyze"):
+            if not consent_ok():
+                return self.send_json({"error": "先に「ご利用にあたって」への同意が必要です。"}, 403)
         if path == "/api/sync":
             if not SYNC["running"]:
                 threading.Thread(target=sync_worker, daemon=True).start()
             return self.send_json({"ok": True})
         if path == "/api/settings":
-            s = load_settings()
             if "api_key" in body:
                 if body["api_key"] == "__clear__":
-                    s["api_key"] = ""
+                    clear_key()
                 elif body["api_key"].strip():
-                    s["api_key"] = body["api_key"].strip()
+                    store_key(body["api_key"].strip())
+            s = load_settings()
             for k in ("model", "memo", "logs_dir"):
                 if k in body and isinstance(body[k], str):
                     s[k] = body[k].strip() if k != "memo" else body[k]
@@ -384,34 +477,114 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json({"error": "not found"}, 404)
 
 
-def pick_port(start):
+class Server(ThreadingHTTPServer):
+    allow_reuse_address = False   # Windowsでは、使用中のポートに重ねて起動できてしまうため、無効にする
+    daemon_threads = True
+
+
+def open_server(start):
+    """空いているポートでサーバーを作る。すでにこのアプリが動いているポートがあれば (None, そのポート) を返す。
+    (使われていないポートへ接続して確かめると、Windowsでは1ポートごとに約1秒かかるため、確保できるかで判定する)"""
     for port in range(start, start + 20):
-        with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", port)) != 0:
-                return port
+        try:
+            return Server(("127.0.0.1", port), Handler), port
+        except OSError:
+            if is_ours(port):
+                return None, port
     raise RuntimeError("使えるポートが見つかりません")
+
+
+def say(*a):
+    try:
+        print(*a)
+    except Exception:  # noqa: BLE001  (exe版にはコンソールがない)
+        pass
+
+
+def is_ours(port):
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/ping", timeout=1) as r:
+            return json.loads(r.read().decode("utf-8")).get("app") == "hsreview"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def run_window(url, srv):
+    """exe版の小さな操作ウィンドウ。閉じるとアプリが終了する。"""
+    import tkinter as tk
+    root = tk.Tk()
+    root.title("HS振り返り")
+    root.geometry("380x170")
+    root.resizable(False, False)
+    ico = APP_DIR / "assets" / "icon.ico"
+    if ico.exists():
+        try:
+            root.iconbitmap(str(ico))
+        except Exception:  # noqa: BLE001
+            pass
+    tk.Label(root, text="HS振り返りを起動しています", font=("Yu Gothic UI", 11, "bold")).pack(pady=(16, 2))
+    tk.Label(root, text=url, fg="#555").pack()
+    row = tk.Frame(root)
+    row.pack(pady=12)
+    tk.Button(row, text="ブラウザで開く", width=14, command=lambda: webbrowser.open(url)).pack(side="left", padx=6)
+    tk.Button(row, text="終了", width=10, command=root.destroy).pack(side="left", padx=6)
+    tk.Label(root, text="このウィンドウを閉じると、アプリが終了します。", fg="#777").pack()
+    root.protocol("WM_DELETE_WINDOW", root.destroy)
+    root.mainloop()
+    srv.shutdown()
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--gui", action="store_true", help="操作ウィンドウを出す(exe版は常に出す)")
     args = ap.parse_args()
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:  # noqa: BLE001
         pass
-    port = pick_port(args.port)
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    no_browser = args.no_browser or bool(os.environ.get("HSREVIEW_NO_BROWSER"))
+    migrate_key()
+    srv, port = open_server(args.port)
+    if srv is None:  # すでに起動している → ブラウザだけ開いて終わる
+        say("すでに起動しています")
+        if not no_browser:
+            webbrowser.open(f"http://127.0.0.1:{port}/")
+        return
     url = f"http://127.0.0.1:{port}/"
-    print(f"HS振り返りアプリを起動しました: {url}  (終了: Ctrl+C)")
-    if not args.no_browser and not os.environ.get("HSREVIEW_NO_BROWSER"):
+    say(f"HS振り返りアプリを起動しました: {url}  (終了: Ctrl+C)")
+    if not no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
+    gui = (args.gui or FROZEN) and not os.environ.get("HSREVIEW_HEADLESS")
+    if gui:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        run_window(url, srv)
+    else:
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:  # noqa: BLE001
+        import traceback
+        log = hs.DATA_DIR / "app.log"
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log.write_text(traceback.format_exc(), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+        if FROZEN:
+            try:
+                import tkinter
+                import tkinter.messagebox as mb
+                r = tkinter.Tk()
+                r.withdraw()
+                mb.showerror("HS振り返り", f"起動に失敗しました。\n詳細は次のファイルを見てください。\n{log}")
+            except Exception:  # noqa: BLE001
+                pass
+        raise

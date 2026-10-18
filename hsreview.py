@@ -28,8 +28,10 @@ from hslog.player import PlayerReference
 
 logging.disable(logging.WARNING)  # hslog の "Broken option nesting" 警告を抑える
 
-HERE = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("HSREVIEW_DATA") or HERE)   # 試合・カードデータの保存先(アプリ版では別の場所に切替)
+FROZEN = getattr(sys, "frozen", False)   # exe(PyInstaller)として動いているか
+HERE = Path(getattr(sys, "_MEIPASS", None) or Path(__file__).resolve().parent)   # 同梱ファイル(knowledge等)の場所
+# 試合・カードデータの保存先。exe版は、書き込める場所(%APPDATA%\HSReview)に置く
+DATA_DIR = Path(os.environ.get("HSREVIEW_DATA") or (Path(os.environ.get("APPDATA") or Path.home()) / "HSReview" if FROZEN else HERE))
 GAMES_DIR = DATA_DIR / "games"
 CARDS_DIR = DATA_DIR / "cards"
 KNOW_DIR = HERE / "knowledge"
