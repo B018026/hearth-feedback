@@ -7,6 +7,10 @@ cards/
 # 自分専用のメモ(デッキの狙いなど)
 CLAUDE.local.md
 
+# アプリの設定(APIキーが入るので絶対に公開しない)
+settings.json
+.env
+
 # Python
 __pycache__/
 *.pyc

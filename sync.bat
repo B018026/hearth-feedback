@@ -1,8 +1,27 @@
 @echo off
-chcp 65001 > nul
 cd /d "%~dp0"
-python hsreview.py sync
-python hsreview.py stats
+set "PY="
+where python >nul 2>nul && set "PY=python"
+if not defined PY where py >nul 2>nul && set "PY=py -3"
+if not defined PY (
+  echo Python was not found.
+  echo Install Python 3.10 or later from https://www.python.org/downloads/
+  echo and check "Add python.exe to PATH" in the installer, then run this file again.
+  pause
+  exit /b 1
+)
+%PY% -c "import hslog, hearthstone, anthropic" >nul 2>nul
+if errorlevel 1 (
+  echo Installing required packages. This takes a minute the first time...
+  %PY% -m pip install -r requirements.txt
+  if errorlevel 1 (
+    echo Package installation failed. Check your internet connection and try again.
+    pause
+    exit /b 1
+  )
+)
+%PY% hsreview.py sync
+%PY% hsreview.py stats
 echo.
-echo 取り込みが終わりました。Claude Code で、このフォルダを開いて「直近の試合を振り返って」と頼んでください。
+echo Done. Open the app (start.bat) or ask Claude Code to review your latest game.
 pause

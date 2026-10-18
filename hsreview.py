@@ -29,8 +29,9 @@ from hslog.player import PlayerReference
 logging.disable(logging.WARNING)  # hslog の "Broken option nesting" 警告を抑える
 
 HERE = Path(__file__).resolve().parent
-GAMES_DIR = HERE / "games"
-CARDS_DIR = HERE / "cards"
+DATA_DIR = Path(os.environ.get("HSREVIEW_DATA") or HERE)   # 試合・カードデータの保存先(アプリ版では別の場所に切替)
+GAMES_DIR = DATA_DIR / "games"
+CARDS_DIR = DATA_DIR / "cards"
 KNOW_DIR = HERE / "knowledge"
 DEFAULT_LOGS = Path(r"C:\Program Files (x86)\Hearthstone\Logs")
 LOCALE = "jaJP"
@@ -136,6 +137,11 @@ class Recorder(EntityTreeExporter):
         self.turn_stats = []      # 自分の各ターンの統計
         self.cur = None
         self.hp_log = []          # (turn, 自HP, 相手HP)
+        self.frames = []          # 画面表示用の盤面スナップショット
+        self.end_turns = set()
+        self.mull_data = {"offered": [], "kept": []}
+        self._hand_new = {}
+        self._use_new = False
         self.coin_turn = None     # コインを使った(自分の)ターン番号
 
     # ---- 例外に強くする
@@ -235,6 +241,71 @@ class Recorder(EntityTreeExporter):
             return "、".join(self.name_of(e) for e in ss)
         return f"{len(ss)}枚(秘策)"
 
+    # ---- 画面表示用の構造化データ
+    def minion_data(self, e):
+        d = {"id": e.card_id or "", "name": self.name_of(e)}
+        if e.tags.get(GameTag.CARDTYPE) == CardType.LOCATION:
+            d["loc"] = True
+        else:
+            d["atk"] = e.tags.get(GameTag.ATK, 0)
+            d["hp"] = e.tags.get(GameTag.HEALTH, 0) - e.tags.get(GameTag.DAMAGE, 0)
+            d["maxhp"] = e.tags.get(GameTag.HEALTH, 0)
+            d["kw"] = [ja for tag, ja in KEYWORDS if e.tags.get(tag)]
+        return d
+
+    def side_data(self, pid, mine):
+        p = self.player(pid)
+        hero = self.ent(p.tags.get(GameTag.HERO_ENTITY, 0)) if p else None
+        h = {}
+        if hero is not None:
+            h = {"id": hero.card_id or "", "name": self.name_of(hero),
+                 "hp": hero.tags.get(GameTag.HEALTH, 0) - hero.tags.get(GameTag.DAMAGE, 0),
+                 "armor": hero.tags.get(GameTag.ARMOR, 0), "atk": hero.tags.get(GameTag.ATK, 0)}
+        powers = self.zone_ents(pid, Zone.PLAY, (CardType.HERO_POWER,))
+        if powers:
+            h["power"] = {"id": powers[0].card_id or "", "name": self.name_of(powers[0]),
+                          "cost": powers[0].tags.get(GameTag.COST, 0)}
+        weapons = self.zone_ents(pid, Zone.PLAY, (CardType.WEAPON,))
+        if weapons:
+            w = weapons[0]
+            h["weapon"] = {"id": w.card_id or "", "name": self.name_of(w), "atk": w.tags.get(GameTag.ATK, 0),
+                           "dur": w.tags.get(GameTag.DURABILITY, 0) - w.tags.get(GameTag.DAMAGE, 0)}
+        t = p.tags if p else {}
+        d = {
+            "hero": h,
+            "mana": {"max": t.get(GameTag.RESOURCES, 0),
+                     "left": max(0, t.get(GameTag.RESOURCES, 0) - t.get(GameTag.OVERLOAD_LOCKED, 0)
+                                 - t.get(GameTag.RESOURCES_USED, 0) + t.get(GameTag.TEMP_RESOURCES, 0))},
+            "board": [self.minion_data(e) for e in self.zone_ents(pid, Zone.PLAY, (CardType.MINION, CardType.LOCATION))],
+            "deck": len(self.zone_ents(pid, Zone.DECK)),
+            "hand_n": len(self.zone_ents(pid, Zone.HAND)),
+        }
+        secrets = self.zone_ents(pid, Zone.SECRET)
+        d["secrets_n"] = len(secrets)
+        d["secrets"] = [{"id": e.card_id or "", "name": self.name_of(e)} for e in secrets] if mine else []
+        if mine:
+            d["hand"] = [{"id": e.card_id or "", "name": self.name_of(e), "cost": e.tags.get(GameTag.COST, 0),
+                          "new": bool(self._use_new and self._hand_new.get(e.id))}
+                         for e in self.zone_ents(pid, Zone.HAND)]
+        return d
+
+    def make_frame(self, phase, mine):
+        self._use_new = phase == "start"
+        return {"turn": self.turn, "owner": "me" if mine else "opp", "phase": phase,
+                "me": self.side_data(self.me, True), "opp": self.side_data(self.opp_pid(), False), "actions": []}
+
+    def game_data(self):
+        by_turn = {}
+        for ev in self.events:
+            if len(ev) > 2 and ev[2] == "action" and ev[1]:
+                by_turn.setdefault(ev[0], []).append(re.sub(r"^- ", "", ev[1].strip()))
+        for f in self.frames:
+            if f["phase"] == "end":
+                f["actions"] = by_turn.get(f["turn"], [])
+        stats = [{k: v for k, v in c.items() if k != "costs"} for c in self.turn_stats]
+        return {"frames": self.frames, "turn_stats": stats, "hp_log": self.hp_log,
+                "mulligan": self.mull_data, "coin_turn": self.coin_turn}
+
     # ---- スナップショット
     def snapshot_start(self):
         me, op = self.me, self.opp_pid()
@@ -243,8 +314,10 @@ class Recorder(EntityTreeExporter):
         used = p.tags.get(GameTag.RESOURCES_USED, 0)
         hand = self.zone_ents(me, Zone.HAND)
         hs = []
+        self._hand_new = {}
         for e in hand:
             mark = "" if e.id in self.seen_hand else "*"
+            self._hand_new[e.id] = bool(mark)
             self.seen_hand.add(e.id)
             hs.append(f"{mark}{self.name_of(e)}[{e.tags.get(GameTag.COST, 0)}]")
         lines = [
@@ -275,8 +348,8 @@ class Recorder(EntityTreeExporter):
             lines.append(f"                 相手の手札: {len(self.zone_ents(op, Zone.HAND))}枚 / 自分の手札: {len(hand)}枚")
         return "\n".join(lines)
 
-    def add(self, text):
-        slot = [self.turn, text]
+    def add(self, text, kind="action"):
+        slot = [self.turn, text, kind]
         self.events.append(slot)
         return slot
 
@@ -332,7 +405,7 @@ class Recorder(EntityTreeExporter):
         if e is self.game:
             if tag == int(GameTag.TURN):
                 self.turn = int(val)
-                self.turn_slot = self.add(None)
+                self.turn_slot = self.add(None, "hdr")
             elif tag == int(GameTag.STEP):
                 if int(val) == int(Step.MAIN_ACTION) and self.snap_done_turn != self.turn:
                     self.snap_done_turn = self.turn
@@ -344,14 +417,18 @@ class Recorder(EntityTreeExporter):
                         self.turn_slot[1] = (f"\n### ターン{self.turn} — {'自分' if mine else '相手'}の手番"
                                              f"（{'自分' if mine else '相手'}の{(self.turn + 1) // 2}回目）")
                     if mine:
-                        self.add(self.snapshot_start())
+                        self.add(self.snapshot_start(), "snap")
                         self.cur = {"turn": self.turn, "n": self.my_turn_count, "avail": self.mana_left(),
                                     "hp": 0, "plays": [],
                                     "costs": {e.id: e.tags.get(GameTag.COST, 0) for e in self.zone_ents(self.me, Zone.HAND)}}
                     self._cur_mine = mine
+                    if mine:
+                        self.frames.append(self.make_frame("start", True))
                 elif int(val) == int(Step.MAIN_END):
                     mine = getattr(self, "_cur_mine", False)
-                    self.add(self.snapshot_end(mine))
+                    self.add(self.snapshot_end(mine), "snap")
+                    self.frames.append(self.make_frame("end", mine))
+                    self.end_turns.add(self.turn)
                     self.hp_log.append((self.turn, self.hero_hp(self.me), self.hero_hp(self.opp_pid())))
                     if mine and self.cur is not None:
                         self.finish_my_turn()
@@ -394,6 +471,13 @@ class Recorder(EntityTreeExporter):
         if self.cur is not None:
             self.finish_my_turn(final=True)
             self.hp_log.append((self.turn, self.hero_hp(self.me), self.hero_hp(self.opp_pid())))
+        if self.turn > 0 and self.turn not in self.end_turns:
+            try:
+                f = self.make_frame("end", getattr(self, "_cur_mine", False))
+                f["final"] = True
+                self.frames.append(f)
+            except Exception:  # noqa: BLE001
+                pass
 
     def handle_choices(self, packet):
         super().handle_choices(packet)
@@ -407,6 +491,7 @@ class Recorder(EntityTreeExporter):
         self._mulligan_open = packet.type == ChoiceType.MULLIGAN
         if self._mulligan_open:
             self.mull_offered = dict(names)
+            self.mull_data["offered"] = [{"id": getattr(self.ent(c), "card_id", "") or "", "name": n} for c, n in names]
         else:
             self.add(f"- 自分の選択肢(発見など): " + " / ".join(n for _, n in names))
 
@@ -418,6 +503,8 @@ class Recorder(EntityTreeExporter):
             pid = getattr(p, "player_id", None)
         if pid == self.me and getattr(self, "_mulligan_open", False):
             self.mull_kept = [self.name_of(self.ent(c)) for c in packet.choices]
+            self.mull_data["kept"] = [{"id": getattr(self.ent(c), "card_id", "") or "", "name": self.name_of(self.ent(c))}
+                                      for c in packet.choices]
             self._mulligan_open = False
         elif pid == self.me:
             self.add("  → 選んだもの: " + " / ".join(self.name_of(self.ent(c)) for c in packet.choices))
@@ -590,14 +677,34 @@ def build_record(lines, header, start_dt, me_name=None):
         "coin_turn": rec.coin_turn, "my_turns": len(rec.turn_stats),
         "hp_log": rec.hp_log,
     }
-    return md, summary
+    data = rec.game_data()
+    data["summary"] = summary
+    data["cards"] = {}
+    for cid, c in rec.cards.used.items():
+        data["cards"][cid] = {"name": c.get("name"), "cost": c.get("cost"), "type": c.get("type"),
+                              "atk": c.get("attack"), "health": c.get("health"), "dur": c.get("durability"),
+                              "text": clean_text(c.get("text")), "set": c.get("set")}
+    return md, summary, data
 
 
-def cmd_sync(args):
-    GAMES_DIR.mkdir(exist_ok=True)
+def write_game(gid, md, summary, data, lines=None):
+    GAMES_DIR.mkdir(parents=True, exist_ok=True)
+    (GAMES_DIR / f"{gid}.md").write_text(md, encoding="utf-8")
+    data["id"] = gid
+    (GAMES_DIR / f"{gid}.json").write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    if lines is not None:
+        with gzip.open(GAMES_DIR / f"{gid}.log.gz", "wt", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+
+
+def sync_games(logs, gametype="GT_RANKED", fmt="FT_STANDARD", me=None, include_incomplete=False, log=print):
+    """Hearthstoneのログから、未取り込みの試合を games/ に保存する。取り込んだ件数を返す。"""
+    GAMES_DIR.mkdir(parents=True, exist_ok=True)
     index_path = GAMES_DIR / "index.json"
     index = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else {}
-    root = Path(args.logs)
+    root = Path(logs)
+    if not root.exists():
+        raise FileNotFoundError(f"ログフォルダが見つかりません: {root}")
     folders = sorted(root.glob("Hearthstone_*"))
     new = 0
     for folder in folders:
@@ -620,24 +727,29 @@ def cmd_sync(args):
             if gid in index:
                 continue
             h = game_header(lines)
-            if h.get("GameType") != args.gametype or h.get("FormatType") != args.format:
+            if h.get("GameType") != gametype or h.get("FormatType") != fmt:
                 continue
             try:
-                md, summary = build_record(lines, h, dt, args.me)
+                md, summary, data = build_record(lines, h, dt, me)
             except Exception as ex:  # noqa: BLE001
-                print(f"[skip] {gid}: {type(ex).__name__}: {ex}", file=sys.stderr)
+                log(f"[skip] {gid}: {type(ex).__name__}: {ex}")
                 continue
-            if not summary["complete"] and not args.include_incomplete:
-                print(f"[skip] {gid}: 終局まで記録されていません(進行中/切断)", file=sys.stderr)
+            if not summary["complete"] and not include_incomplete:
+                log(f"[skip] {gid}: 終局まで記録されていません(進行中/切断)")
                 continue
-            (GAMES_DIR / f"{gid}.md").write_text(md, encoding="utf-8")
-            with gzip.open(GAMES_DIR / f"{gid}.log.gz", "wt", encoding="utf-8") as f:
-                f.write("\n".join(lines))
+            write_game(gid, md, summary, data, lines)
             index[gid] = summary
             new += 1
-            print(f"[new] {gid} {summary['result']} {summary['my']} vs {summary['opp']}")
+            log(f"[new] {gid} {summary['result']} {summary['my']} vs {summary['opp']}")
+            index_path.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
     index_path.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"取り込み: {new}試合 / 保存済み合計: {len(index)}試合")
+    log(f"取り込み: {new}試合 / 保存済み合計: {len(index)}試合")
+    return new
+
+
+def cmd_sync(args):
+    sync_games(args.logs, args.gametype, args.format, args.me, args.include_incomplete,
+               log=lambda m: print(m, file=sys.stderr if m.startswith("[skip]") else sys.stdout))
 
 
 def cmd_rebuild(_args):
@@ -649,11 +761,11 @@ def cmd_rebuild(_args):
         dt = datetime.strptime(gid, "%Y%m%d-%H%M%S")
         h = game_header(lines)
         try:
-            md, summary = build_record(lines, h, dt, _args.me)
+            md, summary, data = build_record(lines, h, dt, _args.me)
         except Exception as ex:  # noqa: BLE001
             print(f"[skip] {gid}: {type(ex).__name__}: {ex}", file=sys.stderr)
             continue
-        (GAMES_DIR / f"{gid}.md").write_text(md, encoding="utf-8")
+        write_game(gid, md, summary, data)
         idx[gid] = summary
         print(f"[rebuilt] {gid} {summary['result']}")
     (GAMES_DIR / "index.json").write_text(json.dumps(idx, ensure_ascii=False, indent=1), encoding="utf-8")

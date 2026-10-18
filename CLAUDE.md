@@ -21,5 +21,6 @@
 
 ## 構成
 - `hsreview.py` ツール本体 / `README.md` 使い方 / `sync.bat` 取り込みの起動用
+- `app.py` + `web/` ブラウザで見るアプリ(試作版) / `start.bat` その起動用。`settings.json`(APIキー入り)は公開・共有しない
 - `games/` 試合ごとの棋譜、生ログ、`index.json`(Git管理外) / `cards/` ビルドごとのカードデータ(自動取得、Git管理外)
 - `knowledge/` 用語とセットの知識 / `examples/` 出力サンプル
