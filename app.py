@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -379,8 +380,13 @@ class Handler(BaseHTTPRequestHandler):
     def static(self, path):
         if path in ("", "/"):
             path = "/index.html"
-        f = (WEB_DIR / path.lstrip("/")).resolve()
-        if WEB_DIR.resolve() not in f.parents or not f.is_file():
+        if path == "/favicon.ico":   # タブ・タスクバーのアイコン(アプリのアイコンと共通)
+            f = APP_DIR / "assets" / "icon.ico"
+        else:
+            f = (WEB_DIR / path.lstrip("/")).resolve()
+            if WEB_DIR.resolve() not in f.parents:
+                return self.send_text("not found", code=404)
+        if not f.is_file():
             return self.send_text("not found", code=404)
         ctype = mimetypes.guess_type(str(f))[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
@@ -494,6 +500,35 @@ def open_server(start):
     raise RuntimeError("使えるポートが見つかりません")
 
 
+def browser_exe():
+    """専用ウィンドウ(アプリモード)で開ける、Edge または Chrome の場所。"""
+    local = os.environ.get("LOCALAPPDATA", "")
+    for c in (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+              r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+              r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+              r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+              str(Path(local) / "Google" / "Chrome" / "Application" / "chrome.exe")):
+        if c and Path(c).exists():
+            return c
+    return None
+
+
+def open_ui(url):
+    """アドレスバーのない専用ウィンドウ(Edge/Chromeのアプリモード)で開く。使えなければ、通常のブラウザで開く。
+    専用のプロフィール(%APPDATA%\\HSReview\\browser)を使うので、普段のブラウザの設定や履歴には触れない。"""
+    if not os.environ.get("HSREVIEW_NORMAL_BROWSER"):
+        exe = browser_exe()
+        if exe:
+            profile = os.environ.get("HSREVIEW_BROWSER_PROFILE") or str(hs.DATA_DIR / "browser")
+            try:
+                subprocess.Popen([exe, f"--app={url}", "--window-size=1360,900", f"--user-data-dir={profile}",
+                                  "--no-first-run", "--no-default-browser-check"], close_fds=True)
+                return
+            except Exception:  # noqa: BLE001
+                pass
+    webbrowser.open(url)
+
+
 def say(*a):
     try:
         print(*a)
@@ -526,7 +561,7 @@ def run_window(url, srv):
     tk.Label(root, text=url, fg="#555").pack()
     row = tk.Frame(root)
     row.pack(pady=12)
-    tk.Button(row, text="ブラウザで開く", width=14, command=lambda: webbrowser.open(url)).pack(side="left", padx=6)
+    tk.Button(row, text="画面を開く", width=14, command=lambda: open_ui(url)).pack(side="left", padx=6)
     tk.Button(row, text="終了", width=10, command=root.destroy).pack(side="left", padx=6)
     tk.Label(root, text="このウィンドウを閉じると、アプリが終了します。", fg="#777").pack()
     root.protocol("WM_DELETE_WINDOW", root.destroy)
@@ -550,12 +585,12 @@ def main():
     if srv is None:  # すでに起動している → ブラウザだけ開いて終わる
         say("すでに起動しています")
         if not no_browser:
-            webbrowser.open(f"http://127.0.0.1:{port}/")
+            open_ui(f"http://127.0.0.1:{port}/")
         return
     url = f"http://127.0.0.1:{port}/"
     say(f"HS振り返りアプリを起動しました: {url}  (終了: Ctrl+C)")
     if not no_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, lambda: open_ui(url)).start()
     gui = (args.gui or FROZEN) and not os.environ.get("HSREVIEW_HEADLESS")
     if gui:
         threading.Thread(target=srv.serve_forever, daemon=True).start()

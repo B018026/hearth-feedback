@@ -6,7 +6,8 @@ Pythonが入っていないPCでも動く、Windows用のアプリを作る手�
 
 - **PyInstaller** で、Pythonと必要なライブラリを丸ごと含んだフォルダ(`HSReview.exe`)を作ります。
 - **Inno Setup** で、そのフォルダを、インストーラー(`HSReview-Setup-x.y.z.exe`)にまとめます。
-- exe版は、小さな操作ウィンドウ(「ブラウザで開く」「終了」)を出し、ブラウザで画面を表示します。ウィンドウを閉じると終了します。二重に起動しても、ブラウザが開くだけです。
+- 画面は、Edge(なければChrome)の**アプリモード**で開きます。アドレスバーのない専用ウィンドウで、タイトルバーにアプリのアイコンと名前が出ます。EdgeもChromeも無い場合は、通常のブラウザで開きます。
+- exe版は、小さな操作ウィンドウ(「画面を開く」「終了」)も出します。この操作ウィンドウを閉じると、アプリが終了します。二重に起動しても、画面が開くだけです。
 
 ## 準備(初回のみ)
 
@@ -42,6 +43,7 @@ python build.py --installer   # exe + インストーラー
 | 試合データ・カードデータ・設定 | `%APPDATA%\HSReview\` |
 | APIキー | Windowsの資格情報マネージャー(名前: `HSReview`) |
 | エラーの記録 | `%APPDATA%\HSReview\app.log` |
+| 専用ウィンドウの設定(Edge/Chromeのプロフィール) | `%APPDATA%\HSReview\browser\` (普段のブラウザには触れません) |
 
 アンインストール時に、試合データを残すか消すかを選べます(初期値は「残す」)。APIキーは自動では消えないので、不要なら資格情報マネージャーから削除してください。
 
@@ -59,6 +61,8 @@ python build.py --installer   # exe + インストーラー
 |---|---|
 | `HSREVIEW_DATA` | データの保存先を別の場所にする |
 | `HSREVIEW_KEYRING_SERVICE` | 資格情報マネージャーの名前を別にする(例: `HSReviewTest`) |
-| `HSREVIEW_NO_BROWSER=1` | ブラウザを自動で開かない |
+| `HSREVIEW_NO_BROWSER=1` | 画面を自動で開かない |
+| `HSREVIEW_NORMAL_BROWSER=1` | 専用ウィンドウではなく、通常のブラウザで開く |
+| `HSREVIEW_BROWSER_PROFILE` | 専用ウィンドウのプロフィールの場所を変える |
 | `HSREVIEW_HEADLESS=1` | exe版でも、操作ウィンドウを出さない |
 | `HSREVIEW_FAKE_AI=1` | AIを呼ばず、ダミーの回答を返す(課金なし) |
