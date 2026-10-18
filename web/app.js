@@ -471,7 +471,16 @@ $("#btn-sync").addEventListener("click", doSync);
 $("#btn-settings").addEventListener("click", openSettings);
 document.querySelector(".brand").style.cursor = "pointer";
 document.querySelector(".brand").addEventListener("click", () => { S.cur = null; S.game = null; renderHome(); });
+/* URLの #g=試合ID&t=replay|stats|ai|text&f=コマ番号 で、開く画面を指定できる(画面の共有・撮影用) */
+async function applyHash() {
+  const p = new URLSearchParams(location.hash.slice(1)), g = p.get("g");
+  if (!g || !S.games.find((x) => x.id === g)) return;
+  await openGame(g);
+  if (p.get("t") && ["replay", "stats", "ai", "text"].includes(p.get("t"))) S.tab = p.get("t");
+  if (p.get("f") != null && p.get("f") !== "") S.frame = +p.get("f");
+  renderGame();
+}
 (async function init() {
-  try { await loadState(); renderList(); renderHome(); }
+  try { await loadState(); renderList(); renderHome(); await applyHash(); }
   catch (e) { $("#main").replaceChildren(h("div", { class: "err" }, "アプリに接続できませんでした: " + e.message)); }
 })();

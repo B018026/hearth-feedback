@@ -206,8 +206,8 @@ class Recorder(EntityTreeExporter):
     def mana_left(self):
         p = self.player(self.me)
         t = p.tags
-        return max(0, t.get(GameTag.RESOURCES, 0) - t.get(GameTag.OVERLOAD_LOCKED, 0)
-                   - t.get(GameTag.RESOURCES_USED, 0) + t.get(GameTag.TEMP_RESOURCES, 0))
+        # オーバーロードで使えないマナは、ログ上すでに RESOURCES_USED に含まれる(引くと二重に数えてしまう)
+        return max(0, t.get(GameTag.RESOURCES, 0) - t.get(GameTag.RESOURCES_USED, 0) + t.get(GameTag.TEMP_RESOURCES, 0))
 
     def hero_hp(self, pid):
         p = self.player(pid)
@@ -274,8 +274,8 @@ class Recorder(EntityTreeExporter):
         d = {
             "hero": h,
             "mana": {"max": t.get(GameTag.RESOURCES, 0),
-                     "left": max(0, t.get(GameTag.RESOURCES, 0) - t.get(GameTag.OVERLOAD_LOCKED, 0)
-                                 - t.get(GameTag.RESOURCES_USED, 0) + t.get(GameTag.TEMP_RESOURCES, 0))},
+                     "left": max(0, t.get(GameTag.RESOURCES, 0) - t.get(GameTag.RESOURCES_USED, 0)
+                                 + t.get(GameTag.TEMP_RESOURCES, 0))},
             "board": [self.minion_data(e) for e in self.zone_ents(pid, Zone.PLAY, (CardType.MINION, CardType.LOCATION))],
             "deck": len(self.zone_ents(pid, Zone.DECK)),
             "hand_n": len(self.zone_ents(pid, Zone.HAND)),
